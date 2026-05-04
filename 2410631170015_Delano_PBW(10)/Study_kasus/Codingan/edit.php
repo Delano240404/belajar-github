@@ -1,0 +1,288 @@
+<?php
+// ============================================
+// FILE: edit.php
+// Deskripsi: Form edit & logika UPDATE dengan Prepared Statements
+// ============================================
+
+// PROTEKSI SESSION
+require_once 'auth_check.php';
+
+require_once 'koneksi.php';
+
+// --- VALIDASI ID DI URL ---
+$id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+if (!$id || $id <= 0) {
+    header('Location: index.php');
+    exit;
+}
+
+$errors  = [];
+$produk  = null;
+
+// --- PROSES FORM SAAT SUBMIT (UPDATE) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    // Pastikan ID dari form juga valid
+    $idPost = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+    if (!$idPost || $idPost != $id) {
+        header('Location: index.php');
+        exit;
+    }
+
+    // 1. Ambil & sanitasi input
+    $kode_produk = trim($_POST['kode_produk'] ?? '');
+    $nama_produk = trim($_POST['nama_produk'] ?? '');
+    $kategori    = trim($_POST['kategori']    ?? '');
+    $harga       = $_POST['harga'] ?? '';
+    $stok        = $_POST['stok']  ?? '';
+
+    // 2. Validasi input
+    if (empty($kode_produk))  $errors['kode_produk'] = 'Kode produk tidak boleh kosong.';
+    if (strlen($kode_produk) > 20) $errors['kode_produk'] = 'Kode produk maksimal 20 karakter.';
+    if (empty($nama_produk))  $errors['nama_produk'] = 'Nama produk tidak boleh kosong.';
+    if (empty($kategori))     $errors['kategori']    = 'Kategori tidak boleh kosong.';
+    if (!is_numeric($harga) || (float)$harga < 0) $errors['harga'] = 'Harga harus berupa angka positif.';
+    if (!is_numeric($stok)  || (int)$stok   < 0)  $errors['stok']  = 'Stok harus berupa angka bulat positif.';
+
+    // 3. Jika validasi lolos, UPDATE dengan Prepared Statements
+    if (empty($errors)) {
+        $harga = (float)$harga;
+        $stok  = (int)$stok;
+
+        // Prepared Statement untuk UPDATE — AMAN dari SQL Injection
+        $sql  = "UPDATE produk SET kode_produk = ?, nama_produk = ?, kategori = ?, harga = ?, stok = ? WHERE id = ?";
+        $stmt = $koneksi->prepare($sql);
+
+        // Bind: s=string, d=double, i=integer
+        $stmt->bind_param('sssdii', $kode_produk, $nama_produk, $kategori, $harga, $stok, $id);
+
+        if ($stmt->execute()) {
+            $stmt->close();
+            $koneksi->close();
+            header('Location: index.php?pesan=edit_sukses');
+            exit;
+        } else {
+            if ($koneksi->errno == 1062) {
+                $errors['kode_produk'] = "Kode produk '$kode_produk' sudah digunakan produk lain.";
+            } else {
+                $stmt->close();
+                $koneksi->close();
+                header('Location: index.php?pesan=edit_gagal');
+                exit;
+            }
+            $stmt->close();
+        }
+
+        // Set data produk dari input form (untuk isi ulang form setelah error)
+        $produk = compact('id', 'kode_produk', 'nama_produk', 'kategori', 'harga', 'stok');
+    } else {
+        $produk = ['id' => $id, 'kode_produk' => $kode_produk, 'nama_produk' => $nama_produk,
+                   'kategori' => $kategori, 'harga' => $harga, 'stok' => $stok];
+    }
+}
+
+// --- AMBIL DATA PRODUK SAAT INI (GET atau setelah error validasi) ---
+if ($produk === null) {
+    // Prepared Statement untuk SELECT berdasarkan ID
+    $stmtGet = $koneksi->prepare("SELECT * FROM produk WHERE id = ? LIMIT 1");
+    $stmtGet->bind_param('i', $id);
+    $stmtGet->execute();
+    $result = $stmtGet->get_result();
+
+    if ($result->num_rows === 0) {
+        $stmtGet->close();
+        $koneksi->close();
+        header('Location: index.php');
+        exit;
+    }
+
+    $produk = $result->fetch_assoc();
+    $stmtGet->close();
+}
+
+// Ambil daftar kategori unik
+$stmtKat = $koneksi->prepare("SELECT DISTINCT kategori FROM produk ORDER BY kategori ASC");
+$stmtKat->execute();
+$resKat = $stmtKat->get_result();
+$kategoriList = [];
+while ($row = $resKat->fetch_assoc()) {
+    $kategoriList[] = $row['kategori'];
+}
+$stmtKat->close();
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Produk — Inventaris</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', sans-serif; }
+        .form-card {
+            max-width: 680px;
+            margin: 2rem auto;
+            border: none;
+            border-radius: 14px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.09);
+        }
+        .form-card .card-header {
+            background: linear-gradient(135deg, #fd7e14 0%, #dc3545 100%);
+            border-radius: 14px 14px 0 0;
+            padding: 1.25rem 1.5rem;
+        }
+        .form-label { font-weight: 600; font-size: 0.88rem; color: #495057; }
+        .form-control:focus, .form-select:focus { border-color: #fd7e14; box-shadow: 0 0 0 0.2rem rgba(253,126,20,.15); }
+        .input-group-text { background-color: #f8f9fa; }
+    </style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand d-flex align-items-center gap-2" href="index.php">
+            <i class="bi bi-box-seam-fill text-primary fs-5"></i>
+            <span>Inventaris <span class="text-primary">Produk</span></span>
+        </a>
+    </div>
+</nav>
+
+<div class="container py-4">
+
+    <!-- Breadcrumb -->
+    <nav aria-label="breadcrumb" class="mb-3">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="index.php"><i class="bi bi-house-fill"></i> Beranda</a></li>
+            <li class="breadcrumb-item active">Edit Produk</li>
+        </ol>
+    </nav>
+
+    <div class="card form-card">
+        <div class="card-header text-white">
+            <h5 class="mb-0 fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Data Produk</h5>
+            <small class="opacity-75">ID: #<?= (int)$produk['id'] ?> — <?= htmlspecialchars($produk['nama_produk']) ?></small>
+        </div>
+
+        <div class="card-body p-4">
+
+            <!-- Ringkasan Error -->
+            <?php if (!empty($errors)): ?>
+            <div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
+                <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+                <div>
+                    <strong>Terdapat <?= count($errors) ?> kesalahan:</strong>
+                    <ul class="mb-0 mt-1">
+                        <?php foreach ($errors as $err): ?>
+                            <li><?= htmlspecialchars($err) ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <form action="edit.php?id=<?= (int)$id ?>" method="POST" novalidate>
+                <!-- Hidden ID untuk keamanan -->
+                <input type="hidden" name="id" value="<?= (int)$produk['id'] ?>">
+
+                <!-- Kode Produk -->
+                <div class="mb-3">
+                    <label for="kode_produk" class="form-label">Kode Produk <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
+                        <input type="text" id="kode_produk" name="kode_produk"
+                            class="form-control <?= isset($errors['kode_produk']) ? 'is-invalid' : '' ?>"
+                            value="<?= htmlspecialchars($produk['kode_produk']) ?>"
+                            maxlength="20" required>
+                        <?php if (isset($errors['kode_produk'])): ?>
+                            <div class="invalid-feedback"><?= htmlspecialchars($errors['kode_produk']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Nama Produk -->
+                <div class="mb-3">
+                    <label for="nama_produk" class="form-label">Nama Produk <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-tag-fill"></i></span>
+                        <input type="text" id="nama_produk" name="nama_produk"
+                            class="form-control <?= isset($errors['nama_produk']) ? 'is-invalid' : '' ?>"
+                            value="<?= htmlspecialchars($produk['nama_produk']) ?>"
+                            maxlength="100" required>
+                        <?php if (isset($errors['nama_produk'])): ?>
+                            <div class="invalid-feedback"><?= htmlspecialchars($errors['nama_produk']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Kategori -->
+                <div class="mb-3">
+                    <label for="kategori" class="form-label">Kategori <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-folder-fill"></i></span>
+                        <input type="text" id="kategori" name="kategori"
+                            class="form-control <?= isset($errors['kategori']) ? 'is-invalid' : '' ?>"
+                            value="<?= htmlspecialchars($produk['kategori']) ?>"
+                            list="kategoriSuggestions" maxlength="50" required>
+                        <?php if (isset($errors['kategori'])): ?>
+                            <div class="invalid-feedback"><?= htmlspecialchars($errors['kategori']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                    <datalist id="kategoriSuggestions">
+                        <?php foreach ($kategoriList as $kat): ?>
+                            <option value="<?= htmlspecialchars($kat) ?>">
+                        <?php endforeach; ?>
+                    </datalist>
+                </div>
+
+                <!-- Harga & Stok -->
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label for="harga" class="form-label">Harga (Rp) <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text">Rp</span>
+                            <input type="number" id="harga" name="harga"
+                                class="form-control <?= isset($errors['harga']) ? 'is-invalid' : '' ?>"
+                                value="<?= htmlspecialchars($produk['harga']) ?>"
+                                min="0" step="100" required>
+                            <?php if (isset($errors['harga'])): ?>
+                                <div class="invalid-feedback"><?= htmlspecialchars($errors['harga']) ?></div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="stok" class="form-label">Stok (Unit) <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-boxes"></i></span>
+                            <input type="number" id="stok" name="stok"
+                                class="form-control <?= isset($errors['stok']) ? 'is-invalid' : '' ?>"
+                                value="<?= htmlspecialchars($produk['stok']) ?>"
+                                min="0" required>
+                            <?php if (isset($errors['stok'])): ?>
+                                <div class="invalid-feedback"><?= htmlspecialchars($errors['stok']) ?></div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tombol Aksi -->
+                <hr class="my-4">
+                <div class="d-flex justify-content-end gap-2">
+                    <a href="index.php" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left me-1"></i> Batal
+                    </a>
+                    <button type="submit" class="btn btn-warning px-4 fw-semibold">
+                        <i class="bi bi-save-fill me-1"></i> Simpan Perubahan
+                    </button>
+                </div>
+
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+<?php $koneksi->close(); ?>
